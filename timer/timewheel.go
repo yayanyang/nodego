@@ -4,10 +4,11 @@ import (
 	"time"
 	"sync"
 	"fmt"
+	"unsafe"
 )
 
 const(
-	INVALID_TICKS = 0xffffffff
+	INVALID_TICKS = 1 << unsafe.Sizeof(int(0)) * 8 - 1
 )
 
 
