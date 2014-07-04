@@ -52,7 +52,7 @@ func (tw *timewheel)__invoke(timer *Timer) {
         timer.ticks = INVALID_TICKS
 	}()
 
-	timer.callback()
+	go timer.callback()
 }
 
 func (tw *timewheel) cascade( index int ) {
