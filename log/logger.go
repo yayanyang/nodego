@@ -3,25 +3,26 @@ package logger
 
 import (
 	"log"
-	"os"
-	"strings"
+	// "os"
 )
 
-//获取通用日志对象，最初由gonet项目实现
-func GetLogger(path string) *log.Logger {
+type DevNull struct{}
 
-	if !strings.HasPrefix(path, "/") {
-		path = os.Getenv("GOPATH") + "/" + path
-	}
-
-	// 打开文件
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		log.Println("error opening file %v\n", err)
-		return nil
-	}
-
-	// 日志
-	logger := log.New(file, "", log.LstdFlags)
-	return logger
+func (DevNull) Write(p []byte) (int, error) {
+	return len(p), nil
 }
+
+// var(
+// 	TRACE *log.Logger = log.New(os.Stdout, "TRACE ", log.Ldate|log.Ltime|log.Lshortfile)
+// 	WARN  *log.Logger = log.New(os.Stdout, "WARN ", log.Ldate|log.Ltime|log.Lshortfile)
+// 	INFO  *log.Logger = log.New(os.Stdout, "INFO ", log.Ldate|log.Ltime|log.Lshortfile)
+// 	ERROR *log.Logger = log.New(os.Stderr, "ERROR ", log.Ldate|log.Ltime|log.Lshortfile)
+// )
+
+
+var(
+	TRACE *log.Logger = log.New(new(DevNull), "TRACE ", log.Ldate|log.Ltime|log.Lshortfile)
+	WARN  *log.Logger = log.New(new(DevNull), "WARN ", log.Ldate|log.Ltime|log.Lshortfile)
+	INFO  *log.Logger = log.New(new(DevNull), "INFO ", log.Ldate|log.Ltime|log.Lshortfile)
+	ERROR *log.Logger = log.New(new(DevNull), "ERROR ", log.Ldate|log.Ltime|log.Lshortfile)
+)
