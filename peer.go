@@ -1,81 +1,75 @@
 package nodego
 
-import(
-	"io"
-	"net"
-	"time"
-	"sync"
+import (
 	"bytes"
 	"encoding/binary"
 	. "github.com/yayanyang/nodego/log"
 	timer "github.com/yayanyang/nodego/timer"
+	"io"
+	"net"
+	"sync"
+	"time"
 )
 
-
-type Peer interface {
-	InConnect(conn net.Conn)
-	SendRequest(name string,request interface{}) (Future, error)
-	SendRequestWithTimeout(name string,timeout time.Duration,request interface{}) (Future, error)
-	Post(name string,request interface{}) error
+type waitRequest struct {
+	response chan Response
+	timer    *timer.Timer
 }
 
 type peer struct {
-	name        string
-	seq         id // id sequence
-	node 		*Node
-	waits		map[id] chan Response //wait list
-	send 		chan Message   //发送队列 
-	mutex 		sync.Mutex
+	name    string
+	seq     Id // id sequence
+	node    *Node
+	waits   map[Id]waitRequest //wait list
+	send    chan Message       //发送队列
+	timeout time.Duration      //请求报文超时时间
+	mutex   sync.Mutex
 }
 
 func (p *peer) recvLoop(conn net.Conn) {
 	for {
-		msg , err := p.node.ReadMessage(conn);
+		msg, err := p.node.ReadMessage(conn)
 		if err != nil {
 			//读取错误
-			ERROR.Printf("close read connection, recv message from peer(%s) err :%s\n",p.name,err)
+			ERROR.Printf("close read connection, recv message from peer(%s) err :%s\n", p.name, err)
 			conn.Close()
 			return
 		}
 
-		switch msg.Code{
-		case request :
-			go p.node.dipatchMessage(p.name, msg,p.send)
-		case notify :
-			go p.node.dipatchMessage(p.name, msg,nil)
+		switch msg.Code {
+		case request:
+			go p.node.dipatchMessage(p.name, msg, p.send)
+		case notify:
+			go p.node.dipatchMessage(p.name, msg, nil)
 		case response:
-			go p.notify(msg.Id,bytes.NewBuffer(msg.Payload),nil)
+			go p.notify(msg.Id, bytes.NewBuffer(msg.Payload), nil)
 		}
 	}
 }
 
-func (p * peer) sendLoop(conn net.Conn){
+func (p *peer) sendLoop(conn net.Conn) {
 	for {
-		msg := <- p.send
+		msg := <-p.send
 
-		TRACE.Printf("send message on write connection(%s)",conn.RemoteAddr())
+		TRACE.Printf("send message on write connection(%s)", conn.RemoteAddr())
 
-		if err := p.sendMessage(conn,msg); err != nil {
+		if err := p.sendMessage(conn, msg); err != nil {
 
-			ERROR.Printf("close write connection(%s) ,write data err:%s",conn,err)
+			ERROR.Printf("close write connection(%s) ,write data err:%s", conn, err)
 			conn.Close()
 			go p.OutConnect()
 			break
 		}
 
-		TRACE.Printf("send message on write connection(%s) -- success",conn.RemoteAddr())
+		TRACE.Printf("send message on write connection(%s) -- success", conn.RemoteAddr())
 	}
 }
 
-func (p *peer) InConnect(conn net.Conn) {
-	go p.recvLoop(conn)
-}
-
-func (p *peer) sendMessage(conn net.Conn, msg Message) error{
+func (p *peer) sendMessage(conn net.Conn, msg Message) error {
 	var buff bytes.Buffer
-	p.node.encoding.Encode(&buff,msg)
-	header := make([]byte,2)
-	binary.BigEndian.PutUint16(header,uint16(buff.Len()))
+	p.node.encoding.Encode(&buff, msg)
+	header := make([]byte, 2)
+	binary.BigEndian.PutUint16(header, uint16(buff.Len()))
 
 	//write header
 	if _, err := conn.Write(header); err != nil {
@@ -83,7 +77,7 @@ func (p *peer) sendMessage(conn net.Conn, msg Message) error{
 	}
 	//write body
 
-	if _, err := io.Copy(conn,&buff); err != nil {
+	if _, err := io.Copy(conn, &buff); err != nil {
 		return err
 	}
 
@@ -91,86 +85,69 @@ func (p *peer) sendMessage(conn net.Conn, msg Message) error{
 
 }
 
-func (p * peer) sendWhoAmI(conn net.Conn) bool {
+func (p *peer) sendWhoAmI(conn net.Conn) bool {
 
 	p.mutex.Lock()
 
 	id := p.seq
 
-	p.seq ++
+	p.seq++
 
 	p.mutex.Unlock()
 
 	var buff bytes.Buffer
 
-	listenAddr,_ := net.ResolveTCPAddr("tcp", p.node.name)
+	listenAddr, _ := net.ResolveTCPAddr("tcp", p.node.name)
 
-	connAddr ,_ := net.ResolveTCPAddr("tcp", conn.LocalAddr().String())
+	connAddr, _ := net.ResolveTCPAddr("tcp", conn.LocalAddr().String())
 
-	name := net.TCPAddr{connAddr.IP,listenAddr.Port,connAddr.Zone}
+	name := net.TCPAddr{connAddr.IP, listenAddr.Port, connAddr.Zone}
 
-	p.node.encoding.Encode(&buff,name.String());
+	p.node.encoding.Encode(&buff, name.String())
 
-	msg := Message{Code:whoAmI,Id:id,Payload:buff.Bytes()}
+	msg := Message{Code: whoAmI, Id: id, Payload: buff.Bytes()}
 
-	
-	INFO.Printf("send whoAmI on write connection(%s)",conn.RemoteAddr())
+	INFO.Printf("send whoAmI on write connection(%s)", conn.RemoteAddr())
 
-	if err := p.sendMessage(conn,msg); err != nil {
-		ERROR.Printf("close write connection(%s) ,write whoAmI err:%s",conn,err)
+	if err := p.sendMessage(conn, msg); err != nil {
+		ERROR.Printf("close write connection(%s) ,write whoAmI err:%s", conn, err)
 		conn.Close()
 		return false
 	}
 
-	INFO.Printf("send whoAmI on write connection(%s) -- success",conn.RemoteAddr())
+	INFO.Printf("send whoAmI on write connection(%s) -- success", conn.RemoteAddr())
 
 	return true
 }
 
-func (p * peer) OutConnect() {
-	for {
-		INFO.Printf("try establish write connection(%s)",p.name)
-
-		conn, err := net.Dial("tcp", p.name)
-
-		if err != nil {
-			WARN.Printf("try establish write connection(%s) err:%s",p.name,err)
-			time.Sleep(connRetryTimeout)
-			continue
-		}
-
-		INFO.Printf("established write connection(%s)",conn.RemoteAddr())
-
-		if p.sendWhoAmI(conn){
-			p.sendLoop(conn)
-		}
-		
-	}
-}
-
-func (p * peer) createFuture() (chan Response,id) {
+func (p *peer) createFuture() (chan Response, Id) {
 	p.mutex.Lock()
 
 	defer p.mutex.Unlock()
 
 	id := p.seq
 
-	p.seq ++
+	p.seq++
 
-	future := make(chan Response,1)
+	future := make(chan Response, 1)
 
-	p.waits[id] = future
+	p.waits[id] = waitRequest{future, timer.Timeout(p.timeout, func() {
+		p.notify(id, nil, RequestTimeout)
+	})}
 
-	return future,id
+	return future, id
 }
 
-func (p *peer) notify(target id, reader io.Reader, err error) {
+func (p *peer) notify(target Id, reader io.Reader, err error) {
 	p.mutex.Lock()
 
 	defer p.mutex.Unlock()
 
-	if future , ok := p.waits[target]; ok {
-		future <- Response{Error : err,reader:reader,node:p.node}
+	if waitRequest, ok := p.waits[target]; ok {
+		delete(p.waits, target)
+
+		waitRequest.response <- Response{Error: err, reader: reader, node: p.node}
+		waitRequest.timer.Cancel()
 	}
 }
 
@@ -181,59 +158,74 @@ func (p *peer) sendRequest(msg Message) error {
 	return nil
 }
 
-func (p *peer) SendRequest(name string,payload interface{}) (Future, error) {
-	future,id := p.createFuture()
+//create new peer object
+func createPeer(node *Node, name string) Peer {
+
+	p := &peer{
+		name:    name,
+		node:    node,
+		send:    make(chan Message, sendCacheSize),
+		waits:   make(map[Id]waitRequest),
+		timeout: requestTimeout}
+
+	go p.OutConnect()
+
+	return p
+}
+
+func (p *peer) InConnect(conn net.Conn) {
+	go p.recvLoop(conn)
+}
+
+func (p *peer) OutConnect() {
+	for {
+		INFO.Printf("try establish write connection(%s)", p.name)
+
+		conn, err := net.Dial("tcp", p.name)
+
+		if err != nil {
+			WARN.Printf("try establish write connection(%s) err:%s", p.name, err)
+			time.Sleep(connRetryTimeout)
+			continue
+		}
+
+		INFO.Printf("established write connection(%s)", conn.RemoteAddr())
+
+		if p.sendWhoAmI(conn) {
+			p.sendLoop(conn)
+		}
+
+	}
+}
+
+func (p *peer) SendRequest(name string, payload interface{}) (Future, error) {
+	future, id := p.createFuture()
 
 	var buff bytes.Buffer
 
-	p.node.encoding.Encode(&buff,payload);
+	p.node.encoding.Encode(&buff, payload)
 
-	return future, p.sendRequest(Message{request,id,name,buff.Bytes()})
+	return future, p.sendRequest(Message{request, id, name, buff.Bytes()})
 }
 
+func (p *peer) SetRequestTimeout(timeout time.Duration) (old time.Duration) {
+	old, p.timeout = p.timeout, timeout
+	return
+}
 
-func (p *peer) Post(name string,payload interface{}) error {
+func (p *peer) Post(name string, payload interface{}) error {
 
 	p.mutex.Lock()
 
 	id := p.seq
 
-	p.seq ++
+	p.seq++
 
 	p.mutex.Unlock()
 
 	var buff bytes.Buffer
 
-	p.node.encoding.Encode(&buff,payload);
+	p.node.encoding.Encode(&buff, payload)
 
-	return p.sendRequest(Message{notify,id,name,buff.Bytes()})
-}
-
-func (p * peer) SendRequestWithTimeout(name string,timeout time.Duration,payload interface{}) (Future, error){
-	future,id := p.createFuture()
-
-	var buff bytes.Buffer
-
-	p.node.encoding.Encode(&buff,payload);
-
-	timer.Timeout(timeout, func () {
-		p.notify(id,nil,RequestTimeout)
-	})
-
-	return future,p.sendRequest(Message{request,id,name,buff.Bytes()})
-}
-
-
-//create new peer object
-func createPeer(node *Node,name string) Peer{
-
-	p  := &peer{
-		name:name,
-		node:node, 
-		send : make(chan Message,sendCacheSize),
-		waits : make(map[id] chan Response) }
-
-	go p.OutConnect()
-
-	return p
+	return p.sendRequest(Message{notify, id, name, buff.Bytes()})
 }
